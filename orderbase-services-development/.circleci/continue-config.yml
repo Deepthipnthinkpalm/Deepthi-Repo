@@ -1,0 +1,1134 @@
+version: 2.1
+orbs:
+  azure-acr: circleci/azure-acr@0.2.1
+  azure-aks: circleci/azure-aks@0.3.0
+  helm: circleci/helm@2.0.1
+  azure-cli: circleci/azure-cli@1.2.2
+
+parameters:
+  acknowledge:
+    type: boolean
+    default: false
+  create:
+    type: boolean
+    default: false
+  confirmed:
+    type: boolean
+    default: false
+  delivered:
+    type: boolean
+    default: false
+  hold:
+    type: boolean
+    default: false
+  progress:
+    type: boolean
+    default: false
+  publn:
+    type: boolean
+    default: false
+  sequence:
+    type: boolean
+    default: false
+  stream:
+    type: boolean
+    default: false
+  user-details:
+    type: boolean
+    default: false
+  user-task:
+    type: boolean
+    default: false
+  imagetag:
+    type: integer
+    default: 1
+  uattag:
+    type: string
+    default: uat-release-1.1.0
+
+  userTaskHelm:
+    type: boolean
+    default: false
+  userDetailsHelm:
+    type: boolean
+    default: false
+  createHelm:
+    type: boolean
+    default: false
+  acknowledgeHelm:
+    type: boolean
+    default: false
+  holdHelm:
+    type: boolean
+    default: false
+  progressHelm:
+    type: boolean
+    default: false
+  confirmedHelm:
+    type: boolean
+    default: false
+  deliveredHelm:
+    type: boolean
+    default: false
+  streamHelm:
+    type: boolean
+    default: false
+  publicationHelm:
+    type: boolean
+    default: false
+  sequenceHelm:
+    type: boolean
+    default: false
+
+executors:
+  ubuntu-vm:
+    machine:
+      image: ubuntu-2204:2022.10.2
+    resource_class: medium
+
+jobs:
+  user-task:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f camunda-user-task/Dockerfile -t orderbase.azurecr.io/$userTask:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$userTask:<< pipeline.number >>
+            fi     
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/usertask:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/usertask:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/usertask:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/usertask:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          resource-group: $resourceGroup
+          install-kubectl: true
+          perform-login: true
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/usertask --untar
+                helm upgrade user-task ./usertask --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$userTask  --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/usertask --untar
+                helm upgrade user-task ./usertask --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$userTask  --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/create --untar
+                helm upgrade user-task ./usertask --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/usertask  --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+            fi
+            
+            
+  user-details:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f user-details-service/Dockerfile -t orderbase.azurecr.io/$userDetails:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$userDetails:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/user-details:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/user-details:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/user-details:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/user-details:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          resource-group: $resourceGroup
+          install-kubectl: true
+          perform-login: true
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/userdetails --untar
+                helm upgrade user-details ./userdetails  --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$userDetails --set database.host=$host --set database.username=$username --set database.password=$password --set keycloak.url=$keycloakUrl --set keycloak.secret=$keycloakSecret --set sendgrid.apikey=$apikey --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/userdetails --untar
+                helm upgrade user-details ./userdetails  --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$userDetails --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set keycloak.url=$keycloakUrl --set keycloak.secret=$keycloakSecret --set sendgrid.apikey=$apikey --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/userdetails --untar
+                helm upgrade user-details ./userdetails  --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/user-details --set database.host=$host --set database.username=$username --set database.password=$password --set keycloak.url=$keycloakUrl --set keycloak.secret=$keycloakSecret --set sendgrid.apikey=$apikey --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+            
+            fi
+
+  create:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f order-create-service/Dockerfile -t orderbase.azurecr.io/$create:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$create:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/create:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/create:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/create:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/create:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          install-kubectl: true
+          perform-login: true
+          resource-group: $resourceGroup
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/create --untar
+                helm upgrade create ./create --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$create --set database.host=$host --set database.username=$username --set database.password=$password --set apikey=$apikey --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase  
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/create --untar
+                helm upgrade create ./create --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$create --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set apikey=$apikey --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/create --untar
+                helm upgrade create ./create --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/create --set database.host=$host --set database.username=$username --set database.password=$password --set apikey=$apikey --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+            fi
+
+  ack:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f order-acknowledgement-service/Dockerfile -t orderbase.azurecr.io/$acknowledge:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$acknowledge:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/acknowledge:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/acknowledge:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/acknowledge:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/acknowledge:<< pipeline.parameters.uattag >> 
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          install-kubectl: true
+          perform-login: true
+          resource-group: $resourceGroup
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/acknowledge --untar
+                helm upgrade acknowledge ./acknowledge --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$acknowledge --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/acknowledge --untar
+                helm upgrade acknowledge ./acknowledge --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$acknowledge --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/acknowledge --untar
+                helm upgrade acknowledge ./acknowledge --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/acknowledge --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+        
+            fi
+
+  hold:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f buyer-hold-order-service/Dockerfile -t orderbase.azurecr.io/$hold:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$hold:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/hold:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/hold:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/hold:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/hold:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          install-kubectl: true
+          perform-login: true
+          resource-group: $resourceGroup
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/hold --untar
+                helm upgrade hold ./hold --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$hold --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/hold --untar
+                helm upgrade hold ./hold --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$hold --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/hold --untar
+                helm upgrade hold ./hold --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/hold --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+            fi
+
+  progress:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f order-inprogress-service/Dockerfile -t orderbase.azurecr.io/$progress:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$progress:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/inprogress:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/inprogress:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/inprogress:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/inprogress:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          install-kubectl: true
+          perform-login: true
+          resource-group: $resourceGroup
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/progress --untar
+                helm upgrade progress ./progress --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$progress --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/progress --untar
+                helm upgrade progress ./progress --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$progress --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/progress --untar
+                helm upgrade progress ./progress --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/inprogress --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+            fi
+ 
+  confirmed:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f order-confirmed-service/Dockerfile -t orderbase.azurecr.io/$confirmed:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$confirmed:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/confirmed:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/confirmed:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/confirmed:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/confirmed:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          install-kubectl: true
+          perform-login: true
+          resource-group: $resourceGroup
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/confirm --untar
+                helm upgrade confirm ./confirm --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$confirmed --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/confirm --untar
+                helm upgrade confirm ./confirm --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$confirmed --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/confirm --untar
+                helm upgrade confirm ./confirm --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/confirmed --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+            
+            fi
+ 
+  delivered:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f order-delivered-service/Dockerfile -t orderbase.azurecr.io/$delivered:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$delivered:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/delivered:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/delivered:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/delivered:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/delivered:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          install-kubectl: true
+          perform-login: true
+          resource-group: $resourceGroup
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/deliver --untar
+                helm upgrade deliver ./deliver --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$delivered --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/deliver --untar
+                helm upgrade deliver ./deliver --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$delivered --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/deliver --untar
+                helm upgrade deliver ./deliver --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/delivered --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+            
+            fi
+
+  stream:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f change-stream-service/Dockerfile -t orderbase.azurecr.io/$stream:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$stream:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/stream:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/stream:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/stream:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/stream:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          install-kubectl: true
+          perform-login: true
+          resource-group: $resourceGroup
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/stream --untar
+                helm upgrade stream ./stream --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$stream --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/stream --untar
+                helm upgrade stream ./stream --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$stream --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/stream --untar
+                helm upgrade stream ./stream --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/stream --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+            
+            fi
+  
+  publication:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f publication-service/Dockerfile -t orderbase.azurecr.io/$publication:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$publication:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/publication:<< pipeline.parameters.imagetag >>
+                 docker tag orderbase.azurecr.io/qa/publication:<< pipeline.parameters.imagetag >> orderbase.azurecr.io/uat/publication:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/publication:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          install-kubectl: true
+          perform-login: true
+          resource-group: $resourceGroup
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/publication --untar
+                helm upgrade publication ./publication --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$publication --set database.host=$host --set database.username=$username --set database.password=$password --set pubsub.endpoint=$pubSubEndpoint --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/publication --untar
+                helm upgrade publication ./publication --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$publication --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set pubsub.endpoint=$pubSubEndpoint --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/publication --untar
+                helm upgrade publication ./publication --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/publication --set database.host=$host --set database.username=$username --set database.password=$password --set pubsub.endpoint=$pubSubEndpoint --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+           
+            fi
+
+  sequence:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
+      - azure-acr/acr-login:
+          registry-name: orderbase
+      - run:
+          name: Build Image on condition
+          command: |
+            if [[ $CIRCLE_BRANCH == "development" || $CIRCLE_BRANCH == "qa" ]]; then
+                 docker build -f sequence-generator/Dockerfile -t orderbase.azurecr.io/$sequence:<< pipeline.number >> .
+                 docker push orderbase.azurecr.io/$sequence:<< pipeline.number >>
+            fi
+            if [ $CIRCLE_BRANCH == "uat" ]; then
+                 docker pull orderbase.azurecr.io/qa/sequence:2296
+                 docker tag orderbase.azurecr.io/qa/sequence:2296 orderbase.azurecr.io/uat/sequence:<< pipeline.parameters.uattag >>
+                 docker push orderbase.azurecr.io/uat/sequence:<< pipeline.parameters.uattag >>
+            fi
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: $clusterName
+          install-kubectl: true
+          perform-login: true
+          resource-group: $resourceGroup
+      - helm/install-helm-client
+      - run:
+          name: Install Helm
+          command: |
+            if [ $CIRCLE_BRANCH == "qa" ]; then 
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_qa | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/sequence --untar
+                helm upgrade sequence ./sequence --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$sequence --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "development" ]; then
+                helm pull oci://orderbase.azurecr.io/helm/sequence --untar
+                helm upgrade sequence ./sequence --set zeebe.address=$zeebe --set buildnum=<< pipeline.number >> --set image.repository=orderbase.azurecr.io/$sequence --set database.host=$host --set database.username=$db_username --set database.password=$db_password --set logging="\{\"com.cb\":\"DEBUG\"\}" --namespace orderbase
+            elif [ $CIRCLE_BRANCH == "uat" ]; then
+                export VAULT_TOKEN=$(curl -s --header "X-Vault-Namespace: $VAULT_NAMESPACE" --request POST --data '{"role_id": "'"$role_id"'", "secret_id":"'"$secret_id"'"}' $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token' )
+                export username=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.username")
+                export password=$(curl -s --header "X-Vault-Token: $VAULT_TOKEN" --header "X-Vault-Namespace: $VAULT_NAMESPACE" $VAULT_ADDR/v1/secret/data/mongodb_secret_uat | jq -r ".data.data.password")
+                helm pull oci://orderbase.azurecr.io/helm/sequence --untar
+                helm upgrade sequence ./sequence --set zeebe.address=$zeebe --set buildnum=<< pipeline.parameters.uattag >> --set image.repository=orderbase.azurecr.io/uat/sequence --set database.host=$host --set database.username=$username --set database.password=$password --set logging="\{\"com.cb\":\"INFO\"\}" --namespace orderbase
+            
+            fi
+
+#---------------------------------------Helm build and push-----------------------------------------------
+
+  helmBuild:
+    executor: ubuntu-vm
+    steps:
+      - checkout
+      - helm/install-helm-client
+      # - azure-cli/install
+      # - azure-cli/login-with-service-principal
+      # - azure-acr/acr-login:
+      #     registry-name: orderbase
+      - run:
+          name: Package and push Helm
+          command: |
+            if [ << pipeline.parameters.userTaskHelm >> == "true" ]; then
+                helm package camunda-user-task/helm
+                helm push *.tgz oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.userDetailsHelm >> == "true" ]; then
+                helm package user-details-service/helm
+                helm push userdetails* oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.createHelm >> == "true" ]; then
+                helm package order-create-service/helm
+                helm push create* oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.acknowledgeHelm >> == "true" ]; then
+                helm package order-acknowledgement-service/helm
+                helm push acknowledge* oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.holdHelm >> == "true" ]; then
+                helm package buyer-hold-order-service/helm
+                helm push hold* oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.progressHelm >> == "true" ]; then
+                helm package order-inprogress-service/helm
+                helm push progress* oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.confirmedHelm >> == "true" ]; then
+                helm package order-confirmed-service/helm
+                helm push confirm* oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.deliveredHelm >> == "true" ]; then
+                helm package order-delivered-service/helm
+                helm push deliver* oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.streamHelm >> == "true" ]; then
+                helm package change-stream-service/helm
+                helm push stream* oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.publicationHelm >> == "true" ]; then
+                helm package publication-service/helm
+                helm push publication* oci://orderbase.azurecr.io/helm
+            elif [ << pipeline.parameters.sequenceHelm >> == "true" ]; then
+                helm package sequence-generator/helm
+                helm push sequence* oci://orderbase.azurecr.io/helm
+            fi
+
+workflows:
+
+#----------------------------------Helm workflow----------------------------------------------------------
+
+  helmPush:
+    when:
+        or:
+          - << pipeline.parameters.userTaskHelm >>
+          - << pipeline.parameters.userDetailsHelm >>
+          - << pipeline.parameters.createHelm >>
+          - << pipeline.parameters.acknowledgeHelm >>
+          - << pipeline.parameters.holdHelm >>
+          - << pipeline.parameters.progressHelm >>
+          - << pipeline.parameters.confirmedHelm >>
+          - << pipeline.parameters.deliveredHelm >>
+          - << pipeline.parameters.streamHelm >>
+          - << pipeline.parameters.publicationHelm >>
+          - << pipeline.parameters.sequenceHelm >>
+
+    jobs:
+      - helmBuild:
+          context: 
+            - RemotePricing2
+          filters:  
+            branches:
+              only:
+                - development
+
+  user-task-qa:
+    when: 
+      or:
+        - << pipeline.parameters.user-task >>
+    jobs:
+      - user-task:
+          context: 
+            - RemotePricing2
+            - backendQA
+
+          filters:  
+            branches:
+              only:
+                - qa
+  user-details-qa:
+    when: 
+      or:
+        - << pipeline.parameters.user-details >>
+    jobs:
+      - user-details:
+          context: 
+            - RemotePricing2
+            - backendQA
+
+          filters:  
+            branches:
+              only:
+                - qa
+
+
+  create-qa:
+    when: 
+      or:
+        - << pipeline.parameters.create >>
+    jobs:
+      - create:
+          context: 
+            - RemotePricing2
+            - backendQA
+          filters:  
+            branches:
+              only:
+                - qa
+  ack-qa:
+    when: 
+      or:
+        - << pipeline.parameters.acknowledge >>
+    jobs:
+      - ack:
+          context: 
+            - RemotePricing2
+            - backendQA
+          filters:  
+            branches:
+              only:
+                - qa
+  hold-qa:
+    when: 
+      or:
+        - << pipeline.parameters.hold >>
+    jobs:
+      - hold:
+          context: 
+            - RemotePricing2
+            - backendQA
+
+          filters:  
+            branches:
+              only:
+                - qa
+  progress-qa:
+    when: 
+      or:
+        - << pipeline.parameters.progress >>
+    jobs:
+      - progress:
+          context: 
+            - RemotePricing2
+            - backendQA
+          filters:  
+            branches:
+              only:
+                - qa
+  confirmed-qa:
+    when: 
+      or:
+        - << pipeline.parameters.confirmed >>
+    jobs:
+      - confirmed:
+          context: 
+            - RemotePricing2
+            - backendQA
+          filters:  
+            branches:
+              only:
+                - qa
+  delivered-qa:
+    when: 
+      or:
+        - << pipeline.parameters.delivered >>
+    jobs:
+      - delivered:
+          context: 
+            - RemotePricing2
+            - backendQA
+
+          filters:  
+            branches:
+              only:
+                - qa
+  
+  stream-qa:
+    when: 
+      or:
+        - << pipeline.parameters.stream >>
+    jobs:
+      - stream:
+          context: 
+            - RemotePricing2
+            - backendQA
+          filters:  
+            branches:
+              only:
+                - qa
+
+  publication-qa:
+    when: 
+      or:
+        - << pipeline.parameters.publn >>
+    jobs:
+      - publication:
+          context: 
+            - RemotePricing2
+            - backendQA
+          filters:  
+            branches:
+              only:
+                - qa
+                
+  sequence-qa:
+    when: 
+      or:
+        - << pipeline.parameters.sequence >>
+    jobs:
+      - sequence:
+          context: 
+            - RemotePricing2
+            - backendQA
+          filters:  
+            branches:
+              only:
+                - qa
+                
+  user-task-dev:
+    when: 
+      or:
+        - << pipeline.parameters.user-task >>
+    jobs:
+      - user-task:
+          context: 
+            - RemotePricing2
+            - backendDEV
+          filters:  
+            branches:
+              only:
+                - development
+                
+  user-details-dev:
+    when: 
+      or:
+        - << pipeline.parameters.user-details >>
+    jobs:
+      - user-details:
+          context: 
+            - RemotePricing2
+            - backendDEV
+          filters:  
+            branches:
+              only:
+                - development
+                
+
+  create-dev:
+    when: 
+      or:
+        - << pipeline.parameters.create >>
+    jobs:
+      - create:
+          context: 
+            - RemotePricing2
+            - backendDEV
+          filters:  
+            branches:
+              only:
+                - development
+  ack-dev:
+    when: 
+      or:
+        - << pipeline.parameters.acknowledge >>
+    jobs:
+      - ack:
+          context: 
+            - RemotePricing2
+            - backendDEV
+
+          filters:  
+            branches:
+              only:
+                - development
+  hold-dev:
+    when: 
+      or:
+        - << pipeline.parameters.hold >>
+    jobs:
+      - hold:
+          context: 
+            - RemotePricing2
+            - backendDEV
+          filters:  
+            branches:
+              only:
+                - development
+  progress-dev:
+    when: 
+      or:
+        - << pipeline.parameters.progress >>
+    jobs:
+      - progress:
+          context: 
+            - RemotePricing2
+            - backendDEV
+
+          filters:  
+            branches:
+              only:
+                - development
+  confirmed-dev:
+    when: 
+      or:
+        - << pipeline.parameters.confirmed >>
+    jobs:
+      - confirmed:
+          context: 
+            - RemotePricing2
+            - backendDEV
+          filters:  
+            branches:
+              only:
+                - development
+  delivered-dev:
+    when: 
+      or:
+        - << pipeline.parameters.delivered >>
+    jobs:
+      - delivered:
+          context: 
+            - RemotePricing2
+            - backendDEV
+          filters:  
+            branches:
+              only:
+                - development
+  stream-dev:
+    when: 
+      or:
+        - << pipeline.parameters.stream >>
+    jobs:
+      - stream:
+          context: 
+            - RemotePricing2
+            - backendDEV
+          filters:  
+            branches:
+              only:
+                - development
+
+  publication-dev:
+    when: 
+      or:
+        - << pipeline.parameters.publn >>
+    jobs:
+      - publication:
+          context: 
+            - RemotePricing2
+            - backendDEV
+          filters:  
+            branches:
+              only:
+                - development
+  
+  sequence-dev:
+    when: 
+      or:
+        - << pipeline.parameters.sequence >>
+    jobs:
+      - sequence:
+          context: 
+            - RemotePricing2
+            - backendDEV
+          filters:  
+            branches:
+              only:
+                - development
+          
+  user-task-uat:
+    when: 
+      and:
+        - << pipeline.parameters.user-task >>
+    jobs:
+      - user-task:
+          context: 
+            - RemotePricing2
+            - backendUAT
+          filters:  
+            branches:
+              only:
+                - uat
+                
+  user-details-uat:
+    when: 
+      and:
+        - << pipeline.parameters.user-details >>
+    jobs:
+      - user-details:
+          context: 
+            - RemotePricing2
+            - backendUAT
+          filters:  
+            branches:
+              only:
+                - uat
+                
+
+  create-uat:
+    when: 
+      and:
+        - << pipeline.parameters.create >>
+    jobs:
+      - create:
+          context: 
+            - RemotePricing2
+            - backendUAT
+          filters:  
+            branches:
+              only:
+                - uat
+  ack-uat:
+    when: 
+      and:
+        - << pipeline.parameters.acknowledge >>
+    jobs:
+      - ack:
+          context: 
+            - RemotePricing2
+            - backendUAT
+
+          filters:  
+            branches:
+              only:
+                - uat
+  hold-uat:
+    when: 
+      and:
+        - << pipeline.parameters.hold >>
+    jobs:
+      - hold:
+          context: 
+            - RemotePricing2
+            - backendUAT
+          filters:  
+            branches:
+              only:
+                - uat
+  progress-uat:
+    when: 
+      and:
+        - << pipeline.parameters.progress >>
+    jobs:
+      - progress:
+          context: 
+            - RemotePricing2
+            - backendUAT
+
+          filters:  
+            branches:
+              only:
+                - uat
+  confirmed-uat:
+    when: 
+      and:
+        - << pipeline.parameters.confirmed >>
+    jobs:
+      - confirmed:
+          context: 
+            - RemotePricing2
+            - backendUAT
+          filters:  
+            branches:
+              only:
+                - uat
+  delivered-uat:
+    when: 
+      and:
+        - << pipeline.parameters.delivered >>
+    jobs:
+      - delivered:
+          context: 
+            - RemotePricing2
+            - backendUAT
+          filters:  
+            branches:
+              only:
+                - uat
+  stream-uat:
+    when: 
+      and:
+        - << pipeline.parameters.stream >>
+    jobs:
+      - stream:
+          context: 
+            - RemotePricing2
+            - backendUAT
+          filters:  
+            branches:
+              only:
+                - uat
+
+  publication-uat:
+    when: 
+      and:
+        - << pipeline.parameters.publn >>
+    jobs:
+      - publication:
+          context: 
+            - RemotePricing2
+            - backendUAT
+          filters:  
+            branches:
+              only:
+                - uat
+  
+  sequence-uat:
+    when: 
+      and:
+        - << pipeline.parameters.sequence >>
+    jobs:
+      - sequence:
+          context: 
+            - RemotePricing2
+            - backendUAT
+          filters:  
+            branches:
+              only:
+                - uat
